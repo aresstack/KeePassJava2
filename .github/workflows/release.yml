@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Java 8
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '8'
@@ -57,6 +57,9 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "Release version: $tag"
+
+      - name: Prepare example test output
+        run: mkdir -p example/testOutput
 
       - name: Build Shadow JAR
         run: mvn -B -Drelease.version=${{ steps.version.outputs.version }} clean package

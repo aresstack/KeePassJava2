@@ -1,0 +1,99 @@
+name: Release Shadow JAR
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          head_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+
+          if [ -n "$head_tag" ]; then
+            tag="$head_tag"
+          else
+            latest_tag="$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+
+            if [ -z "$latest_tag" ]; then
+              tag="v0.1.0"
+            else
+              version="${latest_tag#v}"
+              IFS='.' read -r major minor patch <<< "$version"
+              patch=$((patch + 1))
+              tag="v${major}.${minor}.${patch}"
+            fi
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Release version: $tag"
+
+      - name: Build Shadow JAR
+        run: mvn -B -Drelease.version=${{ steps.version.outputs.version }} clean package
+
+      - name: Verify executable JAR manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar_file="example/target/KeePassJava2-${{ steps.version.outputs.version }}-all.jar"
+          test -f "$jar_file"
+          unzip -p "$jar_file" META-INF/MANIFEST.MF | grep -F 'Main-Class: org.linguafranca.pwdb.kdbx.ChooseFile'
+          unzip -p "$jar_file" META-INF/MANIFEST.MF | grep -F 'Implementation-Version: ${{ steps.version.outputs.version }}'
+
+      - name: Create release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            tagged_commit="$(git rev-list -n 1 "$tag")"
+            if [ "$tagged_commit" != "$GITHUB_SHA" ]; then
+              echo "Tag $tag already exists on $tagged_commit, expected $GITHUB_SHA" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: KeePassJava2 ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: example/target/KeePassJava2-${{ steps.version.outputs.version }}-all.jar
